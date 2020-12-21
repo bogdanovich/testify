@@ -578,6 +578,23 @@ func AnythingOfType(t string) AnythingOfTypeArgument {
 	return AnythingOfTypeArgument(t)
 }
 
+// IsTypeArgument is a struct that contains the type of an argument
+// for use when type checking.  This is an alternative to AnythingOfType.
+// Used in Diff and Assert.
+type IsTypeArgument struct {
+	t interface{}
+}
+
+// IsType returns an IsTypeArgument object containing the type to check for.
+// You can provide a zero-value of the type to check.  This is an
+// alternative to AnythingOfType.  Used in Diff and Assert.
+//
+// For example:
+// Assert(t, IsType(""), IsType(0))
+func IsType(t interface{}) *IsTypeArgument {
+	return &IsTypeArgument{t: t}
+}
+
 // argumentMatcher performs custom argument matching, returning whether or
 // not the argument is matched by the expectation fixture function.
 type argumentMatcher struct {
@@ -677,30 +694,41 @@ func (args Arguments) Diff(objects []interface{}) (string, int) {
 
 	for i := 0; i < maxArgCount; i++ {
 		var actual, expected interface{}
-		var actualFmt, expectedFmt string
 
 		if len(objects) <= i {
 			actual = "(Missing)"
-			actualFmt = "(Missing)"
 		} else {
 			actual = objects[i]
-			actualFmt = fmt.Sprintf("(%[1]T=%[1]v)", actual)
 		}
 
 		if len(args) <= i {
 			expected = "(Missing)"
-			expectedFmt = "(Missing)"
 		} else {
 			expected = args[i]
-			expectedFmt = fmt.Sprintf("(%[1]T=%[1]v)", expected)
+		}
+
+		// %v formatting of the actual or expected object must be deferred to avoid race conditions
+		// Use these methods to defer %v until needed
+		actualFmt := func(actual interface{}) string {
+			if len(objects) <= i {
+				return "(Missing)"
+			}
+			return fmt.Sprintf("(%[1]T=%[1]v)", actual)
+		}
+
+		expectedFmt := func(expected interface{}) string {
+			if len(args) <= i {
+				return "(Missing)"
+			}
+			return fmt.Sprintf("(%[1]T=%[1]v)", expected)
 		}
 
 		if matcher, ok := expected.(argumentMatcher); ok {
 			if matcher.Matches(actual) {
-				output = fmt.Sprintf("%s\t%d: PASS:  %s matched by %s\n", output, i, actualFmt, matcher)
+				output = fmt.Sprintf("%s\t%d: PASS:  %s matched by %s\n", output, i, actualFmt(actual), matcher)
 			} else {
 				differences++
-				output = fmt.Sprintf("%s\t%d: FAIL:  %s not matched by %s\n", output, i, actualFmt, matcher)
+				output = fmt.Sprintf("%s\t%d: FAIL:  %s not matched by %s\n", output, i, actualFmt(actual), matcher)
 			}
 		} else if reflect.TypeOf(expected) == reflect.TypeOf((*AnythingOfTypeArgument)(nil)).Elem() {
 
@@ -708,20 +736,26 @@ func (args Arguments) Diff(objects []interface{}) (string, int) {
 			if reflect.TypeOf(actual).Name() != string(expected.(AnythingOfTypeArgument)) && reflect.TypeOf(actual).String() != string(expected.(AnythingOfTypeArgument)) {
 				// not match
 				differences++
-				output = fmt.Sprintf("%s\t%d: FAIL:  type %s != type %s - %s\n", output, i, expected, reflect.TypeOf(actual).Name(), actualFmt)
+				output = fmt.Sprintf("%s\t%d: FAIL:  type %s != type %s - %s\n", output, i, expected, reflect.TypeOf(actual).Name(), actualFmt(actual))
 			}
 
+		} else if reflect.TypeOf(expected) == reflect.TypeOf((*IsTypeArgument)(nil)) {
+			t := expected.(*IsTypeArgument).t
+			if reflect.TypeOf(t) != reflect.TypeOf(actual) {
+				differences++
+				output = fmt.Sprintf("%s\t%d: FAIL:  type %s != type %s - %s\n", output, i, reflect.TypeOf(t).Name(), reflect.TypeOf(actual).Name(), actualFmt)
+			}
 		} else {
 
 			// normal checking
 
 			if assert.ObjectsAreEqual(expected, Anything) || assert.ObjectsAreEqual(actual, Anything) || assert.ObjectsAreEqual(actual, expected) {
 				// match
-				output = fmt.Sprintf("%s\t%d: PASS:  %s == %s\n", output, i, actualFmt, expectedFmt)
+				output = fmt.Sprintf("%s\t%d: PASS:  %s == %s\n", output, i, actualFmt(actual), expectedFmt(expected))
 			} else {
 				// not match
 				differences++
-				output = fmt.Sprintf("%s\t%d: FAIL:  %s != %s\n", output, i, actualFmt, expectedFmt)
+				output = fmt.Sprintf("%s\t%d: FAIL:  %s != %s\n", output, i, actualFmt(actual), expectedFmt(expected))
 			}
 		}
 
